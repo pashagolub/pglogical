@@ -1,0 +1,28 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    10,0,3,18116
+ PRODUCTVERSION 10,0,3,18116
+ FILEFLAGSMASK  0x17L
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE    0x0L
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "000004b0"
+  BEGIN
+   VALUE "CompanyName",      "Cybertec Shonig & Shonig GmbH."
+   VALUE "FileDescription",  "pglogical - logical replication plugin"
+   VALUE "FileVersion",      "10.3"
+   VALUE "LegalCopyright",   "Portions Copyright (c) 2018, Cybertec Shonig & Shonig GmbH. Copyright (c) 2018, 2ndQuadrant. Copyright (c) 2018, PostgreSQL Global Development Group."
+   VALUE "ProductName",      "PostgreSQL"
+   VALUE "ProductVersion",   "10.3"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0, 1200
+ END
+END
