@@ -35,6 +35,17 @@ PG_FUNCTION_INFO_V1(pglogical_wait_slot_confirm_lsn);
  *
  * No timeout is offered, use a statement_timeout.
  */
+#ifdef WIN32
+
+Datum
+pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
+{
+ 	elog(ERROR, "pglogical.wait_slot_confirm_lsn(slotname name, target pg_lsn) not supported for Windows");	
+	PG_RETURN_VOID();	
+}
+
+#else
+
 Datum
 pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 {
@@ -108,3 +119,4 @@ pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
+#endif
