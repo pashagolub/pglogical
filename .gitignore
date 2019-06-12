@@ -5,6 +5,9 @@ pglogical_create_subscriber
 .vimrc
 *.o
 *.so
+*.dll
+*.exe
+*.a
 *.gcda
 *.gcno
 *~

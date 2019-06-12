@@ -13,12 +13,12 @@ BEGIN
  BEGIN
   BLOCK "000004b0"
   BEGIN
-   VALUE "CompanyName",      "Cybertec Shonig & Shonig GmbH."
-   VALUE "FileDescription",  "pglogical - logical replication plugin"
-   VALUE "FileVersion",      "10.3"
-   VALUE "LegalCopyright",   "Portions Copyright (c) 2018, Cybertec Shonig & Shonig GmbH. Copyright (c) 2018, 2ndQuadrant. Copyright (c) 2018, PostgreSQL Global Development Group."
+   VALUE "CompanyName",      "Cybertec Shonig & Shonig GmbH.\0"
+   VALUE "FileDescription",  "pglogical - logical replication plugin\0"
+   VALUE "FileVersion",      "11.3\0"
+   VALUE "LegalCopyright",   "Portions Copyright (c) 2019, Cybertec Shonig & Shonig GmbH. Copyright (c) 2019, 2ndQuadrant. Copyright (c) 2018, PostgreSQL Global Development Group.\0"
    VALUE "ProductName",      "PostgreSQL"
-   VALUE "ProductVersion",   "10.3"
+   VALUE "ProductVersion",   "11.3"
   END
  END
  BLOCK "VarFileInfo"
