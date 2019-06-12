@@ -38,6 +38,8 @@
 
 #include "parser/parse_coerce.h"
 
+#include "replication/reorderbuffer.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 
@@ -46,6 +48,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+
+#include "pgstat.h"
 
 #include "pglogical_executor.h"
 #include "pglogical_node.h"
@@ -647,9 +651,16 @@ pglogical_supervisor_main(Datum main_arg)
 	pqsignal(SIGTERM, handle_sigterm);
 	BackgroundWorkerUnblockSignals();
 
-	/* Assign the latch in shared memory to our process latch. */
+	/*
+	 * Initialize supervisor info in shared memory.  Strictly speaking we
+	 * don't need a lock here, because no other process could possibly be
+	 * looking at this shared struct since they're all started by the
+	 * supervisor, but let's be safe.
+	 */
+	LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
 	PGLogicalCtx->supervisor = MyProc;
 	PGLogicalCtx->subscriptions_changed = true;
+	LWLockRelease(PGLogicalCtx->lock);
 
 	/* Make it easy to identify our processes. */
 	SetConfigOption("application_name", MyBgworkerEntry->bgw_name,
@@ -660,7 +671,9 @@ pglogical_supervisor_main(Datum main_arg)
 	VALGRIND_PRINTF("PGLOGICAL: supervisor\n");
 
 	/* Setup connection to pinned catalogs (we only ever read pg_database). */
-#if PG_VERSION_NUM >= 90500
+#if PG_VERSION_NUM >= 110000
+	BackgroundWorkerInitializeConnection(NULL, NULL, 0);
+#elif PG_VERSION_NUM >= 90500
 	BackgroundWorkerInitializeConnection(NULL, NULL);
 #else
 	BackgroundWorkerInitializeConnection("postgres", NULL);

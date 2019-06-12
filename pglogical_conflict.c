@@ -29,6 +29,8 @@
 #include "parser/parse_relation.h"
 
 #include "replication/origin.h"
+#include "replication/reorderbuffer.h"
+
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 
@@ -82,7 +84,8 @@ build_index_scan_key(ScanKey skey, Relation rel, Relation idxrel, PGLogicalTuple
 	 * Examine each indexed attribute to ensure the passed tuple's matching
 	 * value isn't NULL and we have an equality operator for it.
 	 */
-	for (attoff = 0; attoff < RelationGetNumberOfAttributes(idxrel); attoff++)
+	for (attoff = 0; attoff < IndexRelationGetNumberOfKeyAttributes(idxrel);
+		 attoff++)
 	{
 		Oid			operator;
 		Oid			opfamily;
@@ -145,13 +148,14 @@ find_index_tuple(ScanKey skey, Relation rel, Relation idxrel,
 	 */
 	InitDirtySnapshot(snap);
 	scan = index_beginscan(rel, idxrel, &snap,
-						   RelationGetNumberOfAttributes(idxrel),
+						   IndexRelationGetNumberOfKeyAttributes(idxrel),
 						   0);
 
 retry:
 	found = false;
 
-	index_rescan(scan, skey, RelationGetNumberOfAttributes(idxrel), NULL, 0);
+	index_rescan(scan, skey, IndexRelationGetNumberOfKeyAttributes(idxrel),
+				 NULL, 0);
 
 	if ((scantuple = index_getnext(scan, ForwardScanDirection)) != NULL)
 	{
@@ -745,7 +749,7 @@ tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple)
 		char	   *outputstr = NULL;
 		bool		isnull;		/* column is null? */
 
-		attr = tupdesc->attrs[natt];
+		attr = TupleDescAttr(tupdesc, natt);
 
 		/*
 		 * don't print dropped columns, we can't be sure everything is

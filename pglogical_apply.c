@@ -21,6 +21,7 @@
 
 #include "catalog/namespace.h"
 
+#include "commands/async.h"
 #include "commands/dbcommands.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
@@ -42,6 +43,7 @@
 #endif
 
 #include "replication/origin.h"
+#include "replication/reorderbuffer.h"
 
 #include "rewrite/rewriteHandler.h"
 
@@ -149,7 +151,6 @@ struct ActionErrCallbackArg
 	const char * action_name;
 	PGLogicalRelation *rel;
 	bool is_ddl_or_drop;
-	bool suppress_output;
 };
 
 struct ActionErrCallbackArg errcallback_arg;
@@ -245,18 +246,15 @@ static void
 action_error_callback(void *arg)
 {
 	StringInfoData si;
+	initStringInfo(&si);
 
-	if (!errcallback_arg.suppress_output)
-	{
-		initStringInfo(&si);
+	format_action_description(&si,
+		errcallback_arg.action_name,
+		errcallback_arg.rel,
+		errcallback_arg.is_ddl_or_drop);
 
-		format_action_description(&si,
-			errcallback_arg.action_name,
-			errcallback_arg.rel,
-			errcallback_arg.is_ddl_or_drop);
-
-		errcontext("%s", si.data);
-	}
+	errcontext("%s", si.data);
+	pfree(si.data);
 }
 
 static bool
@@ -475,6 +473,17 @@ handle_commit(StringInfo s)
 	remote_xid = InvalidTransactionId;
 
 	process_syncing_tables(end_lsn);
+
+	/*
+	 * Ensure any pending signals/self-notifies are sent out.
+	 *
+	 * Note that there is a possibility that this will result in an ERROR,
+	 * which will result in the apply worker being killed and restarted. As
+	 * the notification queues have already been flushed, the same error won't
+	 * occur again, however if errors continue, they will dramatically slow
+	 * down - but not stop - replication.
+	 */
+	ProcessCompletedNotifies();
 
 	pgstat_report_activity(STATE_IDLE, NULL);
 }
@@ -1308,9 +1317,7 @@ apply_work(PGconn *streamConn)
 	/* Init the MessageContext which we use for easier cleanup. */
 	MessageContext = AllocSetContextCreate(TopMemoryContext,
 										   "MessageContext",
-										   ALLOCSET_DEFAULT_MINSIZE,
-										   ALLOCSET_DEFAULT_INITSIZE,
-										   ALLOCSET_DEFAULT_MAXSIZE);
+										   ALLOCSET_DEFAULT_SIZES);
 
 	MemoryContextSwitchTo(MessageContext);
 
@@ -1762,7 +1769,7 @@ process_syncing_tables(XLogRecPtr end_lsn)
 	}
 
 	/*
-	 * If there are still pending tables for syncrhonization, launch the sync
+	 * If there are still pending tables for synchronization, launch the sync
 	 * worker.
 	 */
 	foreach (lc, SyncingTables)

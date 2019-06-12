@@ -11,17 +11,18 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
-#include "pglogical_output_plugin.h"
 
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
 #include "catalog/pg_type.h"
 #include "libpq/pqformat.h"
 #include "nodes/parsenodes.h"
+#include "replication/reorderbuffer.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "pglogical_output_plugin.h"
 #include "pglogical_output_proto.h"
 #include "pglogical_proto_native.h"
 
@@ -106,7 +107,7 @@ pglogical_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 	/* send number of live attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc,i);
 
 		if (att->attisdropped)
 			continue;
@@ -124,7 +125,7 @@ pglogical_write_attrs(StringInfo out, Relation rel, Bitmapset *att_list)
 	/* send the attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc,i);
 		uint8			flags = 0;
 		uint16			len;
 		const char	   *attname;
@@ -346,7 +347,7 @@ pglogical_write_tuple(StringInfo out, PGLogicalOutputData *data,
 
 	for (i = 0; i < desc->natts; i++)
 	{
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc,i);
 
 		if (att->attisdropped)
 			continue;
@@ -373,7 +374,7 @@ pglogical_write_tuple(StringInfo out, PGLogicalOutputData *data,
 	{
 		HeapTuple	typtup;
 		Form_pg_type typclass;
-		Form_pg_attribute att = desc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(desc,i);
 		char		transfer_type;
 
 		/* skip dropped columns */
@@ -578,6 +579,7 @@ pglogical_read_origin(StringInfo in, XLogRecPtr *origin_lsn)
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
+	(void) flags; /* unused */
 
 	/* fixed fields */
 	*origin_lsn = pq_getmsgint64(in);
@@ -605,6 +607,7 @@ pglogical_read_insert(StringInfo in, LOCKMODE lockmode,
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
+	(void) flags; /* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -636,6 +639,7 @@ pglogical_read_update(StringInfo in, LOCKMODE lockmode, bool *hasoldtup,
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
+	(void) flags; /* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -685,6 +689,7 @@ pglogical_read_delete(StringInfo in, LOCKMODE lockmode,
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
+	(void) flags; /* unused */
 
 	/* read the relation id */
 	relid = pq_getmsgint(in, 4);
@@ -733,7 +738,7 @@ pglogical_read_tuple(StringInfo in, PGLogicalRelation *rel,
 	for (i = 0; i < natts; i++)
 	{
 		int			attid = rel->attmap[i];
-		Form_pg_attribute att = desc->attrs[attid];
+		Form_pg_attribute att = TupleDescAttr(desc,attid);
 		char		kind = pq_getmsgbyte(in);
 		const char *data;
 		int			len;
@@ -830,6 +835,7 @@ pglogical_read_rel(StringInfo in)
 	/* read the flags */
 	flags = pq_getmsgbyte(in);
 	Assert(flags == 0);
+	(void) flags; /* unused */
 
 	relid = pq_getmsgint(in, 4);
 

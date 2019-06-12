@@ -11,7 +11,6 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
-#include "pglogical_output_plugin.h"
 
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
@@ -26,9 +25,7 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#ifdef HAVE_REPLICATION_ORIGINS
-#include "replication/origin.h"
-#endif
+#include "replication/reorderbuffer.h"
 #include "utils/builtins.h"
 #include "utils/json.h"
 #include "utils/lsyscache.h"
@@ -38,7 +35,12 @@
 #include "utils/timestamp.h"
 #include "utils/typcache.h"
 
+#include "pglogical_output_plugin.h"
 #include "pglogical_proto_json.h"
+
+#ifdef HAVE_REPLICATION_ORIGINS
+#include "replication/origin.h"
+#endif
 
 static void
 json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
@@ -53,7 +55,7 @@ pglogical_json_write_begin(StringInfo out, PGLogicalOutputData *data, ReorderBuf
 	appendStringInfoChar(out, '{');
 	appendStringInfoString(out, "\"action\":\"B\"");
 	appendStringInfo(out, ", \"has_catalog_changes\":\"%c\"",
-		txn->has_catalog_changes ? 't' : 'f');
+		rbtxn_has_catalog_changes(txn) ? 't' : 'f');
 #ifdef HAVE_REPLICATION_ORIGINS
 	if (txn->origin_id != InvalidRepOriginId)
 		appendStringInfo(out, ", \"origin_id\":\"%u\"", txn->origin_id);
@@ -601,14 +603,14 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 		JsonTypeCategory tcategory;
 		Oid			outfuncoid;
 
-		if (tupdesc->attrs[i]->attisdropped)
+		if (TupleDescAttr(tupdesc,i)->attisdropped)
 			continue;
 
 		if (needsep)
 			appendStringInfoString(result, sep);
 		needsep = true;
 
-		attname = NameStr(tupdesc->attrs[i]->attname);
+		attname = NameStr(TupleDescAttr(tupdesc,i)->attname);
 		escape_json(result, attname);
 		appendStringInfoChar(result, ':');
 
@@ -620,7 +622,7 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 			outfuncoid = InvalidOid;
 		}
 		else
-			json_categorize_type(tupdesc->attrs[i]->atttypid,
+			json_categorize_type(TupleDescAttr(tupdesc,i)->atttypid,
 								 &tcategory, &outfuncoid);
 
 		datum_to_json(val, isnull, result, tcategory, outfuncoid, false);
@@ -655,7 +657,7 @@ json_write_tuple(StringInfo out, Relation rel, HeapTuple tuple,
 
 	for (i = 0; i < tupdesc->natts; i++)
 	{
-		Form_pg_attribute att = tupdesc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(tupdesc,i);
 		JsonTypeCategory tcategory;
 		Oid			outfuncoid;
 

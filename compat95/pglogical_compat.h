@@ -44,4 +44,21 @@ extern Oid CatalogTupleInsert(Relation heapRel, HeapTuple tup);
 extern void CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup);
 extern void CatalogTupleDelete(Relation heapRel, ItemPointer tid);
 
+#define pgl_replorigin_drop(roident) \
+	replorigin_drop(roident)
+
+#define pgl_heap_attisnull(tup, attnum, tupledesc) \
+	heap_attisnull(tup, attnum)
+
+#define ALLOCSET_DEFAULT_SIZES \
+		ALLOCSET_DEFAULT_MINSIZE, \
+		ALLOCSET_DEFAULT_INITSIZE, \
+		ALLOCSET_DEFAULT_MAXSIZE
+
+#ifndef rbtxn_has_catalog_changes
+#define rbtxn_has_catalog_changes(txn) (txn->has_catalog_changes)
+#endif
+
+#define IndexRelationGetNumberOfKeyAttributes(rel) RelationGetNumberOfAttributes(rel)
+
 #endif

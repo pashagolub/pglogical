@@ -67,6 +67,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "pgstat.h"
+
 #include "pglogical_dependency.h"
 #include "pglogical_node.h"
 #include "pglogical_executor.h"
@@ -143,6 +145,8 @@ PG_FUNCTION_INFO_V1(pglogical_xact_commit_timestamp_origin);
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
 						  const char *subscriber_name);
+
+bool in_pglogical_replicate_ddl_command = false;
 
 static PGLogicalLocalNode *
 check_local_node(bool for_update)
@@ -341,6 +345,8 @@ pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
 	char	   *if_name = NameStr(*PG_GETARG_NAME(1));
 	PGLogicalNode	   *node;
 	PGlogicalInterface *oldif;
+	List		   *other_subs;
+	ListCell	   *lc;
 
 	node = get_node_by_name(node_name, false);
 	if (node == NULL)
@@ -354,6 +360,18 @@ pglogical_alter_node_drop_interface(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("interface \"%s\" for node node \"%s\" not found",
 				 if_name, node_name)));
+
+	other_subs = get_node_subscriptions(node->id, true);
+	foreach (lc, other_subs)
+	{
+		PGLogicalSubscription  *sub = (PGLogicalSubscription *) lfirst(lc);
+		if (oldif->id == sub->origin_if->id)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot drop interface \"%s\" for node \"%s\" because subscription \"%s\" is using it",
+							oldif->name, node->name, sub->name),
+					 errhint("change the subscription interface first")));
+        }
 
 	drop_node_interface(oldif->id);
 
@@ -605,7 +623,7 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
 		/* Drop the origin tracking locally. */
 		originid = replorigin_by_name(sub->slot_name, true);
 		if (originid != InvalidRepOriginId)
-			replorigin_drop(originid);
+			pgl_replorigin_drop(originid);
 	}
 
 	PG_RETURN_BOOL(sub != NULL);
@@ -851,7 +869,7 @@ pglogical_alter_subscription_synchronize(PG_FUNCTION_ARGS)
 }
 
 /*
- * Resyncrhonize one existing table.
+ * Resynchronize one existing table.
  */
 Datum
 pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
@@ -1630,7 +1648,7 @@ pglogical_replication_set_add_all_tables(PG_FUNCTION_ARGS)
 }
 
 /*
- * Add replication set / table mapping based on schemas.
+ * Add replication set / sequence mapping based on schemas.
  */
 Datum
 pglogical_replication_set_add_all_sequences(PG_FUNCTION_ARGS)
@@ -1745,13 +1763,28 @@ pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
 	queue_message(replication_sets, GetUserId(),
 				  QUEUE_COMMAND_TYPE_SQL, cmd.data);
 
-	/* Execute the query locally. */
-	pglogical_execute_sql_command(query, GetUserNameFromId(GetUserId()
-#if PG_VERSION_NUM >= 90500
-														   , false
-#endif
-														   ),
-								  false);
+	/*
+	 * Execute the query locally.
+	 * Use PG_TRY to ensure in_pglogical_replicate_ddl_command gets cleaned up
+	 */
+	in_pglogical_replicate_ddl_command = true;
+	PG_TRY();
+	{
+		pglogical_execute_sql_command(query, GetUserNameFromId(GetUserId()
+	#if PG_VERSION_NUM >= 90500
+															   , false
+	#endif
+															   ),
+									  false);
+	}
+	PG_CATCH();
+	{
+		in_pglogical_replicate_ddl_command = false;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	in_pglogical_replicate_ddl_command = false;
 
 	/*
 	 * Restore the GUC variables we set above.
@@ -1760,7 +1793,6 @@ pglogical_replicate_ddl_command(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(true);
 }
-
 
 /*
  * pglogical_queue_trigger
@@ -1859,7 +1891,8 @@ pglogical_node_info(PG_FUNCTION_ARGS)
  * Get replication info about table.
  *
  * This is called by downstream sync worker on the upstream to obtain
- * info needed to do initial synchronization correctly.
+ * info needed to do initial synchronization correctly. Be careful
+ * about changing it, as it must be upward- and downward-compatible.
  */
 Datum
 pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
@@ -1904,7 +1937,7 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
 	/* Build the column list. */
 	for (i = 0; i < reldesc->natts; i++)
 	{
-		Form_pg_attribute att = reldesc->attrs[i];
+		Form_pg_attribute att = TupleDescAttr(reldesc,i);
 
 		/* Skip dropped columns. */
 		if (att->attisdropped)
@@ -2140,19 +2173,19 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 		if (isdone)
 		{
 			/*
-			 * Subscription its self is synced, but what about separately
+			 * Subscription itself is synced, but what about separately
 			 * synced tables?
 			 */
 			if (relname != NULL)
 			{
-				PGLogicalSyncStatus *table = get_table_sync_status(sub->id, relnamespace, relname, true);
+				PGLogicalSyncStatus *table = get_table_sync_status(sub->id, relnamespace, relname, false);
 				isdone = table && table->status == SYNC_STATUS_READY;
 				free_sync_status(table);
 			}
 			else
 			{
 				/*
-				 * This is plenty inefficient and we should probably just do a direct catalog
+				 * XXX This is plenty inefficient and we should probably just do a direct catalog
 				 * scan, but meh, it hardly has to be fast.
 				 */
 				ListCell *lc;

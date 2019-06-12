@@ -376,7 +376,7 @@ make_copy_attnamelist(PGLogicalRelation *rel)
 		int		remoteattnum = physatt_in_attmap(rel, attnum);
 
 		/* Skip dropped attributes. */
-		if (desc->attrs[attnum]->attisdropped)
+		if (TupleDescAttr(desc,attnum)->attisdropped)
 			continue;
 
 		if (remoteattnum < 0)
@@ -554,6 +554,9 @@ copy_table_data(PGconn *origin_conn, PGconn *target_conn,
 	}
 
 	PQclear(res);
+
+	elog(INFO, "finished synchronization of data for table %s.%s",
+		 remoterel->nspname, remoterel->relname);
 }
 
 /*
@@ -681,7 +684,7 @@ pglogical_sync_worker_cleanup(PGLogicalSubscription *sub)
 	if (replorigin_session_origin != InvalidRepOriginId)
 	{
 		replorigin_session_reset();
-		replorigin_drop(replorigin_session_origin);
+		pgl_replorigin_drop(replorigin_session_origin);
 		replorigin_session_origin = InvalidRepOriginId;
 	}
 }
@@ -699,7 +702,7 @@ pglogical_sync_tmpfile_cleanup_cb(int code, Datum arg)
 	const char *tmpfile = DatumGetCString(arg);
 
 	if (unlink(tmpfile) != 0 && errno != ENOENT)
-		elog(WARNING, "Failed to clean up pglogical temporary dump file \"%s\" on exit/error",
+		elog(WARNING, "Failed to clean up pglogical temporary dump file \"%s\" on exit/error: %m",
 			 tmpfile);
 }
 
@@ -715,9 +718,7 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 	/* We need our own context for keeping things between transactions. */
 	myctx = AllocSetContextCreate(CurrentMemoryContext,
 								   "pglogical_sync_subscription cxt",
-								   ALLOCSET_DEFAULT_MINSIZE,
-								   ALLOCSET_DEFAULT_INITSIZE,
-								   ALLOCSET_DEFAULT_MAXSIZE);
+								   ALLOCSET_DEFAULT_SIZES);
 
 	StartTransactionCommand();
 	oldctx = MemoryContextSwitchTo(myctx);
@@ -751,15 +752,23 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 		RepOriginId	originid;
 		char	   *snapshot;
 		bool		use_failover_slot;
+		int			server_version = PQserverVersion(origin_conn);
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
 		origin_conn = pglogical_connect(sub->origin_if->dsn,
 										sub->name, "snap");
-		use_failover_slot = PQserverVersion(origin_conn) < 100000 &&
+
+		/* 2QPG9.6 and 2QPG11 support failover slots */
+		use_failover_slot = ((server_version < 100000 &&
 			pglogical_remote_function_exists(origin_conn, "pg_catalog",
 											 "pg_create_logical_replication_slot",
-											 3);
+											 3)) ||
+							((server_version > 110000
+							  && server_version < 120000) &&
+			pglogical_remote_function_exists(origin_conn, "pg_catalog",
+											 "pg_create_logical_replication_slot",
+											 4)));
 		origin_conn_repl = pglogical_connect_replica(sub->origin_if->dsn,
 													 sub->name, "snap");
 
@@ -1312,8 +1321,8 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (heap_attisnull(tuple, Anum_sync_nspname) &&
-			heap_attisnull(tuple, Anum_sync_relname))
+		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			break;
 	}
 
@@ -1364,8 +1373,8 @@ set_subscription_sync_status(Oid subid, char status)
 	scan = systable_beginscan(rel, 0, true, NULL, 1, key);
 	while (HeapTupleIsValid(oldtup = systable_getnext(scan)))
 	{
-		if (heap_attisnull(oldtup, Anum_sync_nspname) &&
-			heap_attisnull(oldtup, Anum_sync_relname))
+		if (pgl_heap_attisnull(oldtup, Anum_sync_nspname, NULL) &&
+			pgl_heap_attisnull(oldtup, Anum_sync_relname, NULL))
 			break;
 	}
 
@@ -1476,9 +1485,33 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	HeapTuple		tuple;
 	ScanKeyData		key[3];
 	TupleDesc		tupDesc;
+	Oid				idxoid = InvalidOid;
+	List		   *indexes;
+	ListCell	   *l;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
 	rel = heap_openrv(rv, RowExclusiveLock);
+
+	/* Find an index we can use to scan this catalog. */
+	indexes = RelationGetIndexList(rel);
+	foreach (l, indexes)
+	{
+		Relation	idx = index_open(lfirst_oid(l), AccessShareLock);
+
+		if (idx->rd_index->indkey.values[0] == Anum_sync_subid &&
+			idx->rd_index->indkey.values[1] == Anum_sync_nspname &&
+			idx->rd_index->indkey.values[2] == Anum_sync_relname)
+		{
+			idxoid = lfirst_oid(l);
+			index_close(idx, AccessShareLock);
+			break;
+		}
+		index_close(idx, AccessShareLock);
+	}
+	if (!OidIsValid(idxoid))
+		elog(ERROR, "could not find index on local_sync_status");
+	list_free(indexes);
+
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1494,7 +1527,7 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 				BTEqualStrategyNumber, F_NAMEEQ,
 				CStringGetDatum(relname));
 
-	scan = systable_beginscan(rel, 0, true, NULL, 3, key);
+	scan = systable_beginscan(rel, idxoid, true, NULL, 3, key);
 	tuple = systable_getnext(scan);
 
 	if (!HeapTupleIsValid(tuple))
@@ -1544,8 +1577,8 @@ get_unsynced_tables(Oid subid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (heap_attisnull(tuple, Anum_sync_nspname) &&
-			heap_attisnull(tuple, Anum_sync_relname))
+		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			continue;
 
 		sync = syncstatus_fromtuple(tuple, tupDesc);
@@ -1585,8 +1618,8 @@ get_subscription_tables(Oid subid)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		if (heap_attisnull(tuple, Anum_sync_nspname) &&
-			heap_attisnull(tuple, Anum_sync_relname))
+		if (pgl_heap_attisnull(tuple, Anum_sync_nspname, NULL) &&
+			pgl_heap_attisnull(tuple, Anum_sync_relname, NULL))
 			continue;
 
 		sync = syncstatus_fromtuple(tuple, tupDesc);
@@ -1668,7 +1701,7 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
  * in TopMemoryContext.
  */
 bool
-wait_for_sync_status_change(Oid subid, char *nspname, char *relname,
+wait_for_sync_status_change(Oid subid, const char *nspname, const char *relname,
 							char desired_state, XLogRecPtr *lsn)
 {
 	int rc;
