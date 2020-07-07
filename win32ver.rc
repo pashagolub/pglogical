@@ -1,24 +1,24 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION    10,0,3,18116
- PRODUCTVERSION 10,0,3,18116
+ FILEVERSION    2,03,02
+ PRODUCTVERSION 2,03,02
  FILEFLAGSMASK  0x17L
  FILEFLAGS      0x0L
  FILEOS         VOS_NT_WINDOWS32
- FILETYPE VFT_APP
+ FILETYPE	VFT_APP
  FILESUBTYPE    0x0L
 BEGIN
  BLOCK "StringFileInfo"
  BEGIN
   BLOCK "000004b0"
   BEGIN
-   VALUE "CompanyName",      "Cybertec Shonig & Shonig GmbH.\0"
-   VALUE "FileDescription",  "pglogical - logical replication plugin\0"
-   VALUE "FileVersion",      "11.3\0"
-   VALUE "LegalCopyright",   "Portions Copyright (c) 2019, Cybertec Shonig & Shonig GmbH. Copyright (c) 2019, 2ndQuadrant. Copyright (c) 2018, PostgreSQL Global Development Group.\0"
-   VALUE "ProductName",      "PostgreSQL"
-   VALUE "ProductVersion",   "11.3"
+   VALUE "CompanyName",      "PostgreSQL Global Development Group"
+   VALUE "FileDescription",  "pglogical - logical replication plugin"
+   VALUE "FileVersion",      "2.3.2"
+   VALUE "LegalCopyright", "Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group. Portions Copyright (c) 1994, Regents of the University of California."
+   VALUE "ProductName",      "pglogical"
+   VALUE "ProductVersion",   "2.3.2"
   END
  END
  BLOCK "VarFileInfo"
@@ -26,3 +26,4 @@ BEGIN
   VALUE "Translation", 0x0, 1200
  END
 END
+

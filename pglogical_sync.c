@@ -752,7 +752,6 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 		RepOriginId	originid;
 		char	   *snapshot;
 		bool		use_failover_slot;
-		int			server_version = PQserverVersion(origin_conn);
 
 		elog(INFO, "initializing subscriber %s", sub->name);
 
@@ -760,15 +759,11 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 										sub->name, "snap");
 
 		/* 2QPG9.6 and 2QPG11 support failover slots */
-		use_failover_slot = ((server_version < 100000 &&
+		use_failover_slot =
 			pglogical_remote_function_exists(origin_conn, "pg_catalog",
 											 "pg_create_logical_replication_slot",
-											 3)) ||
-							((server_version > 110000
-							  && server_version < 120000) &&
-			pglogical_remote_function_exists(origin_conn, "pg_catalog",
-											 "pg_create_logical_replication_slot",
-											 4)));
+											 -1,
+											 "failover");
 		origin_conn_repl = pglogical_connect_replica(sub->origin_if->dsn,
 													 sub->name, "snap");
 
@@ -802,12 +797,12 @@ pglogical_sync_subscription(PGLogicalSubscription *sub)
 					originid,
 					(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
 #if PG_VERSION_NUM >= 90500
-				replorigin_rel = heap_open(ReplicationOriginRelationId, RowExclusiveLock);
+				replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
 #endif
 				replorigin_advance(originid, lsn, XactLastCommitEnd, true,
 								   true);
 #if PG_VERSION_NUM >= 90500
-				heap_close(replorigin_rel, RowExclusiveLock);
+				table_close(replorigin_rel, RowExclusiveLock);
 #endif
 
 				CommitTransactionCommand();
@@ -983,12 +978,12 @@ pglogical_sync_table(PGLogicalSubscription *sub, RangeVar *table,
 			(uint32)(XactLastCommitEnd>>32), (uint32)XactLastCommitEnd);
 
 #if PG_VERSION_NUM >= 90500
-		replorigin_rel = heap_open(ReplicationOriginRelationId, RowExclusiveLock);
+		replorigin_rel = table_open(ReplicationOriginRelationId, RowExclusiveLock);
 #endif
 		replorigin_advance(originid, *status_lsn, XactLastCommitEnd, true,
 						   true);
 #if PG_VERSION_NUM >= 90500
-		heap_close(replorigin_rel, RowExclusiveLock);
+		table_close(replorigin_rel, RowExclusiveLock);
 #endif
 
 		set_table_sync_status(sub->id, table->schemaname, table->relname,
@@ -1170,7 +1165,8 @@ pglogical_sync_main(Datum main_arg)
 	pglogical_identify_system(streamConn, NULL, NULL, NULL, NULL);
 
 	pglogical_start_replication(streamConn, MySubscription->slot_name,
-								status_lsn, "all", NULL, tablename);
+								status_lsn, "all", NULL, tablename,
+								MySubscription->force_text_transfer);
 
 	/* Leave it to standard apply code to do the replication. */
 	apply_work(streamConn);
@@ -1199,7 +1195,7 @@ create_local_sync_status(PGLogicalSyncStatus *sync)
 	bool		nulls[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Form a tuple. */
@@ -1228,7 +1224,7 @@ create_local_sync_status(PGLogicalSyncStatus *sync)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /* Remove subscription sync status record from catalog. */
@@ -1242,7 +1238,7 @@ drop_subscription_sync_status(Oid subid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_sync_subid,
@@ -1257,8 +1253,7 @@ drop_subscription_sync_status(Oid subid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
-
+	table_close(rel, RowExclusiveLock);
 }
 
 static PGLogicalSyncStatus *
@@ -1310,7 +1305,7 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 	TupleDesc		tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1331,7 +1326,7 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, RowExclusiveLock);
+			table_close(rel, RowExclusiveLock);
 			return NULL;
 		}
 
@@ -1341,7 +1336,7 @@ get_subscription_sync_status(Oid subid, bool missing_ok)
 	sync = syncstatus_fromtuple(tuple, tupDesc);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return sync;
 }
@@ -1362,7 +1357,7 @@ set_subscription_sync_status(Oid subid, char status)
 	bool			replaces[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1397,7 +1392,7 @@ set_subscription_sync_status(Oid subid, char status)
 	/* Cleanup. */
 	heap_freetuple(newtup);
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /* Remove table sync status record from catalog. */
@@ -1411,7 +1406,7 @@ drop_table_sync_status(const char *nspname, const char *relname)
 	ScanKeyData		key[2];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_sync_nspname,
@@ -1430,8 +1425,7 @@ drop_table_sync_status(const char *nspname, const char *relname)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
-
+	table_close(rel, RowExclusiveLock);
 }
 
 /* Remove table sync status record from catalog. */
@@ -1446,7 +1440,7 @@ drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 	ScanKeyData		key[3];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_sync_subid,
@@ -1469,7 +1463,7 @@ drop_table_sync_status_for_sub(Oid subid, const char *nspname,
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 }
 
@@ -1490,7 +1484,7 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	ListCell	   *l;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Find an index we can use to scan this catalog. */
 	indexes = RelationGetIndexList(rel);
@@ -1535,7 +1529,7 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, RowExclusiveLock);
+			table_close(rel, RowExclusiveLock);
 			return NULL;
 		}
 
@@ -1546,7 +1540,7 @@ get_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	sync = syncstatus_fromtuple(tuple, tupDesc);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return sync;
 }
@@ -1565,7 +1559,7 @@ get_unsynced_tables(Oid subid)
 	TupleDesc		tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1587,7 +1581,7 @@ get_unsynced_tables(Oid subid)
 	}
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return res;
 }
@@ -1606,7 +1600,7 @@ get_subscription_tables(Oid subid)
 	TupleDesc		tupDesc;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1627,7 +1621,7 @@ get_subscription_tables(Oid subid)
 	}
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return res;
 }
@@ -1649,7 +1643,7 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	bool			replaces[Natts_local_sync_state];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_SYNC_STATUS, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1688,7 +1682,7 @@ set_table_sync_status(Oid subid, const char *nspname, const char *relname,
 	/* Cleanup. */
 	heap_freetuple(newtup);
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 }
 
 /*

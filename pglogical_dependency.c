@@ -21,6 +21,9 @@
 
 #include "postgres.h"
 
+#if PG_VERSION_NUM >= 120000
+#include "access/heapam.h"
+#endif
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
@@ -82,7 +85,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
+#if PG_VERSION_NUM < 120000
 #include "utils/tqual.h"
+#endif
 
 #include "pglogical_dependency.h"
 #include "pglogical_sync.h"
@@ -227,8 +232,8 @@ static void reportDependentObjects(const ObjectAddresses *targetObjects,
 					   DropBehavior behavior,
 					   int msglevel,
 					   const ObjectAddress *origObject);
-static void AcquireDeletionLock(const ObjectAddress *object, int flags);
-static void ReleaseDeletionLock(const ObjectAddress *object);
+static void PGLAcquireDeletionLock(const ObjectAddress *object, int flags);
+static void PGLReleaseDeletionLock(const ObjectAddress *object);
 static bool find_expr_references_walker(Node *node,
 							find_expr_references_context *context);
 static void eliminate_duplicate_dependencies(ObjectAddresses *addrs);
@@ -305,7 +310,7 @@ pglogical_recordMultipleDependencies(const ObjectAddress *depender,
 	if (nreferenced <= 0)
 		return;					/* nothing to do */
 
-	dependDesc = heap_open(get_pglogical_depend_rel_oid(),
+	dependDesc = table_open(get_pglogical_depend_rel_oid(),
 						   RowExclusiveLock);
 
 	memset(nulls, false, sizeof(nulls));
@@ -333,7 +338,7 @@ pglogical_recordMultipleDependencies(const ObjectAddress *depender,
 		heap_freetuple(tup);
 	}
 
-	heap_close(dependDesc, RowExclusiveLock);
+	table_close(dependDesc, RowExclusiveLock);
 }
 
 
@@ -461,7 +466,7 @@ findDependentObjects(const ObjectAddress *object,
 #endif
 				/* no problem */
 				break;
-#if PG_VERSION_NUM >= 110000
+#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
 			case DEPENDENCY_INTERNAL_AUTO:
 #endif
 			case DEPENDENCY_INTERNAL:
@@ -492,7 +497,7 @@ findDependentObjects(const ObjectAddress *object,
 					{
 						systable_endscan(scan);
 						/* need to release caller's lock; see notes below */
-						ReleaseDeletionLock(object);
+						PGLReleaseDeletionLock(object);
 						return;
 					}
 
@@ -545,7 +550,7 @@ findDependentObjects(const ObjectAddress *object,
 				 * other words, we don't follow the links back to the owning
 				 * object.
 				 */
-#if PG_VERSION_NUM >= 110000
+#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
 				if (foundDep->deptype == DEPENDENCY_INTERNAL_AUTO)
 					break;
 #endif
@@ -556,8 +561,8 @@ findDependentObjects(const ObjectAddress *object,
 				 * caller's lock to avoid deadlock against a concurrent
 				 * deletion of the owning object.)
 				 */
-				ReleaseDeletionLock(object);
-				AcquireDeletionLock(&otherObject, 0);
+				PGLReleaseDeletionLock(object);
+				PGLAcquireDeletionLock(&otherObject, 0);
 
 				/*
 				 * The owning object might have been deleted while we waited
@@ -568,7 +573,7 @@ findDependentObjects(const ObjectAddress *object,
 				if (!systable_recheck_tuple(scan, tup))
 				{
 					systable_endscan(scan);
-					ReleaseDeletionLock(&otherObject);
+					PGLReleaseDeletionLock(&otherObject);
 					return;
 				}
 
@@ -653,7 +658,7 @@ findDependentObjects(const ObjectAddress *object,
 		/*
 		 * Must lock the dependent object before recursing to it.
 		 */
-		AcquireDeletionLock(&otherObject, 0);
+		PGLAcquireDeletionLock(&otherObject, 0);
 
 		/*
 		 * The dependent object might have been deleted while we waited to
@@ -665,7 +670,7 @@ findDependentObjects(const ObjectAddress *object,
 		if (!systable_recheck_tuple(scan, tup))
 		{
 			/* release the now-useless lock */
-			ReleaseDeletionLock(&otherObject);
+			PGLReleaseDeletionLock(&otherObject);
 			/* and continue scanning for dependencies */
 			continue;
 		}
@@ -683,7 +688,7 @@ findDependentObjects(const ObjectAddress *object,
 				break;
 #endif
 			case DEPENDENCY_INTERNAL:
-#if PG_VERSION_NUM >= 110000
+#if PG_VERSION_NUM >= 110000 && PG_VERSION_NUM < 120000
 			case DEPENDENCY_INTERNAL_AUTO:
 #endif
 				subflags = DEPFLAG_INTERNAL;
@@ -924,14 +929,14 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 }
 
 /*
- * AcquireDeletionLock - acquire a suitable lock for deleting an object
+ * PGLAcquireDeletionLock - acquire a suitable lock for deleting an object
  *
  * We use LockRelation for relations, LockDatabaseObject for everything
  * else.  Note that dependency.c is not concerned with deleting any kind of
  * shared-across-databases object, so we have no need for LockSharedObject.
  */
 static void
-AcquireDeletionLock(const ObjectAddress *object, int flags)
+PGLAcquireDeletionLock(const ObjectAddress *object, int flags)
 {
 	if (object->classId == RelationRelationId)
 	{
@@ -955,10 +960,10 @@ AcquireDeletionLock(const ObjectAddress *object, int flags)
 }
 
 /*
- * ReleaseDeletionLock - release an object deletion lock
+ * PGLReleaseDeletionLock - release an object deletion lock
  */
 static void
-ReleaseDeletionLock(const ObjectAddress *object)
+PGLReleaseDeletionLock(const ObjectAddress *object)
 {
 	if (object->classId == RelationRelationId)
 		UnlockRelationOid(object->objectId, AccessExclusiveLock);
@@ -1913,7 +1918,7 @@ void pglogical_tryDropDependencies(const ObjectAddress *object,
 	 * We save some cycles by opening pglogical_depend just once and passing the
 	 * Relation pointer down to all the recursive deletion steps.
 	 */
-	depRel = heap_open(get_pglogical_depend_rel_oid(), RowExclusiveLock);
+	depRel = table_open(get_pglogical_depend_rel_oid(), RowExclusiveLock);
 
 	/*
 	 * Construct a list of objects to delete (ie, the given object plus
@@ -1953,7 +1958,7 @@ void pglogical_tryDropDependencies(const ObjectAddress *object,
 	/* And clean up */
 	free_object_addresses(targetObjects);
 
-	heap_close(depRel, RowExclusiveLock);
+	table_close(depRel, RowExclusiveLock);
 }
 
 /*

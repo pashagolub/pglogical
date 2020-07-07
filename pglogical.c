@@ -374,7 +374,7 @@ pglogical_manage_extension(void)
 	PushActiveSnapshot(GetTransactionSnapshot());
 
 	/* make sure we're operating without other pglogical workers interfering */
-	extrel = heap_open(ExtensionRelationId, ShareUpdateExclusiveLock);
+	extrel = table_open(ExtensionRelationId, ShareUpdateExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_extension_extname,
@@ -412,7 +412,7 @@ pglogical_manage_extension(void)
 	}
 
 	systable_endscan(scandesc);
-	heap_close(extrel, NoLock);
+	table_close(extrel, NoLock);
 
 	PopActiveSnapshot();
 }
@@ -482,11 +482,13 @@ void
 pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 							XLogRecPtr start_pos, const char *forward_origins,
 							const char *replication_sets,
-							const char *replicate_only_table)
+							const char *replicate_only_table,
+							bool force_text_transfer)
 {
 	StringInfoData	command;
 	PGresult	   *res;
 	char		   *sqlstate;
+	const char	   *want_binary = (force_text_transfer ? "0" : "1");
 
 	initStringInfo(&command);
 	appendStringInfo(&command, "START_REPLICATION SLOT \"%s\" LOGICAL %X/%X (",
@@ -502,8 +504,8 @@ pglogical_start_replication(PGconn *streamConn, const char *slot_name,
 	appendStringInfo(&command, ", startup_params_format '1'");
 
 	/* Binary protocol compatibility. */
-	appendStringInfo(&command, ", \"binary.want_internal_basetypes\" '1'");
-	appendStringInfo(&command, ", \"binary.want_binary_basetypes\" '1'");
+	appendStringInfo(&command, ", \"binary.want_internal_basetypes\" '%s'", want_binary);
+	appendStringInfo(&command, ", \"binary.want_binary_basetypes\" '%s'", want_binary);
 	appendStringInfo(&command, ", \"binary.basetypes_major_version\" '%u'",
 					 PG_VERSION_NUM/100);
 	appendStringInfo(&command, ", \"binary.sizeof_datum\" '%zu'",
@@ -598,12 +600,12 @@ static void
 start_manager_workers(void)
 {
 	Relation	rel;
-	HeapScanDesc scan;
+	TableScanDesc scan;
 	HeapTuple	tup;
 
 	/* Run manager worker for every connectable database. */
-	rel = heap_open(DatabaseRelationId, AccessShareLock);
-	scan = heap_beginscan_catalog(rel, 0, NULL);
+	rel = table_open(DatabaseRelationId, AccessShareLock);
+	scan = table_beginscan_catalog(rel, 0, NULL);
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
@@ -637,8 +639,8 @@ start_manager_workers(void)
 		pglogical_worker_register(&worker);
 	}
 
-	heap_endscan(scan);
-	heap_close(rel, AccessShareLock);
+	table_endscan(scan);
+	table_close(rel, AccessShareLock);
 }
 
 /*

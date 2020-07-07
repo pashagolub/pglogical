@@ -87,7 +87,7 @@ typedef struct SubscriptionTuple
 	NameData	sub_slot_name;
 } SubscriptionTuple;
 
-#define Natts_subscription			11
+#define Natts_subscription			12
 #define Anum_sub_id					1
 #define Anum_sub_name				2
 #define Anum_sub_origin				3
@@ -99,6 +99,7 @@ typedef struct SubscriptionTuple
 #define Anum_sub_replication_sets	9
 #define Anum_sub_forward_origins	10
 #define Anum_sub_apply_delay		11
+#define Anum_sub_force_text_transfer 12
 
 /*
  * We impose same validation rules as replication slot name validation does.
@@ -158,7 +159,7 @@ create_node(PGLogicalNode *node)
 									strlen(node->name)));
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Form a tuple. */
@@ -175,7 +176,7 @@ create_node(PGLogicalNode *node)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 
@@ -195,7 +196,7 @@ drop_node(Oid nodeid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -214,7 +215,7 @@ drop_node(Oid nodeid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 
@@ -246,7 +247,7 @@ get_node(Oid nodeid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -263,7 +264,7 @@ get_node(Oid nodeid)
 	node = node_fromtuple(tuple);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return node;
 }
@@ -282,7 +283,7 @@ get_node_by_name(const char *name, bool missing_ok)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -298,7 +299,7 @@ get_node_by_name(const char *name, bool missing_ok)
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, RowExclusiveLock);
+			table_close(rel, RowExclusiveLock);
 			return NULL;
 		}
 
@@ -308,7 +309,7 @@ get_node_by_name(const char *name, bool missing_ok)
 	node = node_fromtuple(tuple);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return node;
 }
@@ -327,7 +328,7 @@ create_local_node(Oid nodeid, Oid ifid)
 	bool		nulls[Natts_local_node];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
-	rel = heap_openrv(rv, AccessExclusiveLock);
+	rel = table_openrv(rv, AccessExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* TODO: better error message */
@@ -347,7 +348,7 @@ create_local_node(Oid nodeid, Oid ifid)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, AccessExclusiveLock);
+	table_close(rel, AccessExclusiveLock);
 
 	CommandCounterIncrement();
 }
@@ -364,7 +365,7 @@ drop_local_node(void)
 	HeapTuple		tuple;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
-	rel = heap_openrv(rv, AccessExclusiveLock);
+	rel = table_openrv(rv, AccessExclusiveLock);
 
 	/* Find the local node tuple. */
 	scan = systable_beginscan(rel, 0, true, NULL, 0, NULL);
@@ -381,7 +382,7 @@ drop_local_node(void)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 }
@@ -403,7 +404,7 @@ get_local_node(bool for_update, bool missing_ok)
 	PGLogicalLocalNode *res;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_LOCAL_NODE, -1);
-	rel = heap_openrv_extended(rv, for_update ?
+	rel = table_openrv_extended(rv, for_update ?
 							   ShareUpdateExclusiveLock : RowExclusiveLock,
 							   true);
 
@@ -427,7 +428,7 @@ get_local_node(bool for_update, bool missing_ok)
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, for_update ?
+			table_close(rel, for_update ?
 					   NoLock : RowExclusiveLock);
 			return NULL;
 		}
@@ -445,7 +446,7 @@ get_local_node(bool for_update, bool missing_ok)
 											desc, &isnull));
 
 	systable_endscan(scan);
-	heap_close(rel, for_update ? NoLock : RowExclusiveLock);
+	table_close(rel, for_update ? NoLock : RowExclusiveLock);
 
 	res = (PGLogicalLocalNode *) palloc(sizeof(PGLogicalLocalNode));
 	res->node = get_node(nodeid);
@@ -482,7 +483,7 @@ create_node_interface(PGlogicalInterface *nodeif)
 	}
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Form a tuple. */
@@ -501,7 +502,7 @@ create_node_interface(PGlogicalInterface *nodeif)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	CommandCounterIncrement();
 }
@@ -519,7 +520,7 @@ drop_node_interface(Oid ifid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -538,7 +539,7 @@ drop_node_interface(Oid ifid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 }
@@ -556,7 +557,7 @@ drop_node_interfaces(Oid nodeid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -572,7 +573,7 @@ drop_node_interfaces(Oid nodeid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 }
@@ -592,7 +593,7 @@ get_node_interface(Oid ifid)
 	PGlogicalInterface *nodeif;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -615,7 +616,7 @@ get_node_interface(Oid ifid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return nodeif;
 }
@@ -635,7 +636,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 	PGlogicalInterface *nodeif;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_NODE_INTERFACE, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for interface record. */
 	ScanKeyInit(&key[0],
@@ -655,7 +656,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, RowExclusiveLock);
+			table_close(rel, RowExclusiveLock);
 
 			return NULL;
 		}
@@ -673,7 +674,7 @@ get_node_interface_by_name(Oid nodeid, const char *name, bool missing_ok)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return nodeif;
 }
@@ -706,7 +707,7 @@ create_subscription(PGLogicalSubscription *sub)
 									  strlen(sub->name)));
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Form a tuple. */
@@ -740,6 +741,8 @@ create_subscription(PGLogicalSubscription *sub)
 	else
 		nulls[Anum_sub_apply_delay - 1] = true;
 
+	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
+
 	tup = heap_form_tuple(tupDesc, values, nulls);
 
 	/* Insert the tuple to the catalog. */
@@ -747,7 +750,7 @@ create_subscription(PGLogicalSubscription *sub)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	CommandCounterIncrement();
 
@@ -774,7 +777,7 @@ alter_subscription(PGLogicalSubscription *sub)
 	NameData	sub_slot_name;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	/* Search for node record. */
@@ -823,6 +826,7 @@ alter_subscription(PGLogicalSubscription *sub)
 		nulls[Anum_sub_forward_origins - 1] = true;
 
 	values[Anum_sub_apply_delay - 1] = IntervalPGetDatum(sub->apply_delay);
+	values[Anum_sub_force_text_transfer - 1] = BoolGetDatum(sub->force_text_transfer);
 
 	newtup = heap_modify_tuple(oldtup, tupDesc, values, nulls, replaces);
 
@@ -832,7 +836,7 @@ alter_subscription(PGLogicalSubscription *sub)
 	/* Cleanup. */
 	heap_freetuple(newtup);
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 
@@ -852,7 +856,7 @@ drop_subscription(Oid subid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -871,7 +875,7 @@ drop_subscription(Oid subid)
 
 	/* Cleanup. */
 	systable_endscan(scan);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	CommandCounterIncrement();
 
@@ -926,6 +930,13 @@ subscription_fromtuple(HeapTuple tuple, TupleDesc desc)
 	else
 		sub->apply_delay = DatumGetIntervalP(d);
 
+	/* Get force_text_transfer. */
+	d = heap_getattr(tuple, Anum_sub_force_text_transfer, desc, &isnull);
+	if (isnull)
+		sub->force_text_transfer = false;
+	else
+		sub->force_text_transfer = DatumGetBool(d);
+
 	return sub;
 }
 
@@ -944,7 +955,7 @@ get_subscription(Oid subid)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -962,7 +973,7 @@ get_subscription(Oid subid)
 	sub = subscription_fromtuple(tuple, desc);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return sub;
 }
@@ -982,7 +993,7 @@ get_subscription_by_name(const char *name, bool missing_ok)
 	ScanKeyData		key[1];
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 
 	/* Search for node record. */
 	ScanKeyInit(&key[0],
@@ -998,7 +1009,7 @@ get_subscription_by_name(const char *name, bool missing_ok)
 		if (missing_ok)
 		{
 			systable_endscan(scan);
-			heap_close(rel, RowExclusiveLock);
+			table_close(rel, RowExclusiveLock);
 			return NULL;
 		}
 
@@ -1009,7 +1020,7 @@ get_subscription_by_name(const char *name, bool missing_ok)
 	sub = subscription_fromtuple(tuple, desc);
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return sub;
 }
@@ -1030,7 +1041,7 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	List		   *res = NIL;
 
 	rv = makeRangeVar(EXTENSION_NAME, CATALOG_SUBSCRIPTION, -1);
-	rel = heap_openrv(rv, RowExclusiveLock);
+	rel = table_openrv(rv, RowExclusiveLock);
 	desc = RelationGetDescr(rel);
 
 	ScanKeyInit(&key[0],
@@ -1048,7 +1059,7 @@ get_node_subscriptions(Oid nodeid, bool origin)
 	}
 
 	systable_endscan(scan);
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	return res;
 }

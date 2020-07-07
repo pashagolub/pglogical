@@ -16,7 +16,15 @@ DATA = pglogical--1.0.0.sql pglogical--1.0.0--1.0.1.sql \
 	   pglogical--2.0.0--2.1.0.sql pglogical--2.0.1--2.1.0.sql \
 	   pglogical--2.1.0--2.1.1.sql pglogical--2.1.1--2.2.0.sql \
 	   pglogical--2.2.0.sql \
-	   pglogical--2.2.0--2.2.1.sql pglogical--2.2.1.sql
+	   pglogical--2.2.0--2.2.1.sql pglogical--2.2.1.sql \
+	   pglogical--2.2.1--2.2.2.sql pglogical--2.2.2.sql \
+	   pglogical--2.2.2--2.3.0.sql \
+	   pglogical--2.2.2--2.3.1.sql \
+	   pglogical--2.3.0.sql \
+	   pglogical--2.3.0--2.3.1.sql \
+	   pglogical--2.3.1.sql \
+	   pglogical--2.3.1--2.3.2.sql \
+	   pglogical--2.3.2.sql
 
 OBJS = pglogical_apply.o pglogical_conflict.o pglogical_manager.o \
 	   pglogical.o pglogical_node.o pglogical_relcache.o \
@@ -26,7 +34,7 @@ OBJS = pglogical_apply.o pglogical_conflict.o pglogical_manager.o \
 	   pglogical_dependency.o pglogical_apply_heap.o pglogical_apply_spi.o \
 	   pglogical_output_config.o pglogical_output_plugin.o \
 	   pglogical_output_proto.o pglogical_proto_json.o \
-	   pglogical_proto_native.o pglogical_monitoring.o $(WIN32RES)
+	   pglogical_proto_native.o pglogical_monitoring.o
 
 SCRIPTS_built = pglogical_create_subscriber
 

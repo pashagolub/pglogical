@@ -26,8 +26,8 @@
 
 #include "pglogical_compat.h"
 
-#define PGLOGICAL_VERSION "2.2.1"
-#define PGLOGICAL_VERSION_NUM 20201
+#define PGLOGICAL_VERSION "2.3.2"
+#define PGLOGICAL_VERSION_NUM 20302
 
 #define PGLOGICAL_MIN_PROTO_VERSION_NUM 1
 #define PGLOGICAL_MAX_PROTO_VERSION_NUM 1
@@ -69,7 +69,8 @@ extern void pglogical_start_replication(PGconn *streamConn,
 										XLogRecPtr start_pos,
 										const char *forward_origins,
 										const char *replication_sets,
-										const char *replicate_only_table);
+										const char *replicate_only_table,
+										bool force_text_transfer);
 
 extern void pglogical_manage_extension(void);
 

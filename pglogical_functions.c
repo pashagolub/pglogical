@@ -50,6 +50,7 @@
 #include "replication/reorderbuffer.h"
 #include "replication/slot.h"
 
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 
@@ -141,6 +142,9 @@ PG_FUNCTION_INFO_V1(pglogical_min_proto_version);
 PG_FUNCTION_INFO_V1(pglogical_max_proto_version);
 
 PG_FUNCTION_INFO_V1(pglogical_xact_commit_timestamp_origin);
+
+/* Compatibility for upgrading */
+PG_FUNCTION_INFO_V1(pglogical_show_repset_table_info_by_target);
 
 static void gen_slot_name(Name slot_name, char *dbname,
 						  const char *provider_name,
@@ -392,6 +396,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 	bool					sync_data = PG_GETARG_BOOL(4);
 	ArrayType			   *forward_origin_names = PG_GETARG_ARRAYTYPE_P(5);
 	Interval			   *apply_delay = PG_GETARG_INTERVAL_P(6);
+	bool					force_text_transfer = PG_GETARG_BOOL(7);
 	PGconn				   *conn;
 	PGLogicalSubscription	sub;
 	PGLogicalSyncStatus		sync;
@@ -506,6 +511,7 @@ pglogical_create_subscription(PG_FUNCTION_ARGS)
 				  origin.name, sub_name);
 	sub.slot_name = pstrdup(NameStr(slot_name));
 	sub.apply_delay = apply_delay;
+	sub.force_text_transfer = force_text_transfer;
 
 	create_subscription(&sub);
 
@@ -585,6 +591,8 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
 		/* Wait for the apply to die. */
 		for (;;)
 		{
+			int rc;
+
 			LWLockAcquire(PGLogicalCtx->lock, LW_EXCLUSIVE);
 			apply = pglogical_apply_find(MyDatabaseId, sub->id);
 			if (!pglogical_worker_running(apply))
@@ -596,8 +604,11 @@ pglogical_drop_subscription(PG_FUNCTION_ARGS)
 
 			CHECK_FOR_INTERRUPTS();
 
-			(void) WaitLatch(&MyProc->procLatch,
-							 WL_LATCH_SET | WL_TIMEOUT, 1000L);
+			rc = WaitLatch(&MyProc->procLatch,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 1000L);
+
+			if (rc & WL_POSTMASTER_DEATH)
+				proc_exit(1);
 
 			ResetLatch(&MyProc->procLatch);
 		}
@@ -883,7 +894,7 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	char				   *nspname,
 						   *relname;
 
-	rel = heap_open(reloid, AccessShareLock);
+	rel = table_open(reloid, AccessShareLock);
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
 	relname = RelationGetRelationName(rel);
@@ -893,6 +904,7 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 	if (oldsync)
 	{
 		if (oldsync->status != SYNC_STATUS_READY &&
+			oldsync->status != SYNC_STATUS_SYNCDONE &&
 			oldsync->status != SYNC_STATUS_NONE)
 			elog(ERROR, "table %s.%s is already being synchronized",
 				 nspname, relname);
@@ -913,7 +925,7 @@ pglogical_alter_subscription_resynchronize_table(PG_FUNCTION_ARGS)
 		create_local_sync_status(&newsync);
 	}
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	if (truncate)
 		truncate_table(nspname, relname);
@@ -1319,6 +1331,9 @@ parse_row_filter(Relation rel, char *row_filter_str)
 	pstate = make_parsestate(NULL);
 	rte = addRangeTableEntryForRelation(pstate,
 										rel,
+#if PG_VERSION_NUM >= 120000
+										AccessShareLock,
+#endif
 										NULL,
 										false,
 										true);
@@ -1398,7 +1413,7 @@ pglogical_replication_set_add_table(PG_FUNCTION_ARGS)
 	 * Make sure the relation exists (lock mode has to be the same one as
 	 * in replication_set_add_relation).
 	 */
-	rel = heap_open(reloid, ShareRowExclusiveLock);
+	rel = table_open(reloid, ShareRowExclusiveLock);
 	tupDesc = RelationGetDescr(rel);
 
 	nspname = get_namespace_name(RelationGetNamespace(rel));
@@ -1455,14 +1470,13 @@ pglogical_replication_set_add_table(PG_FUNCTION_ARGS)
 		appendStringInfo(&json, ",\"table_name\": ");
 		escape_json(&json, relname);
 		appendStringInfo(&json, "}");
-
-		/* Queue the truncate for replication. */
+		/* Queue the synchronize request for replication. */
 		queue_message(list_make1(repset->name), GetUserId(),
 					  QUEUE_COMMAND_TYPE_TABLESYNC, json.data);
 	}
 
 	/* Cleanup. */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	PG_RETURN_BOOL(true);
 }
@@ -1493,7 +1507,7 @@ pglogical_replication_set_add_sequence(PG_FUNCTION_ARGS)
 	 * Make sure the relation exists (lock mode has to be the same one as
 	 * in replication_set_add_relation).
 	 */
-	rel = heap_open(reloid, ShareRowExclusiveLock);
+	rel = table_open(reloid, ShareRowExclusiveLock);
 
 	replication_set_add_seq(repset->id, reloid);
 
@@ -1518,7 +1532,7 @@ pglogical_replication_set_add_sequence(PG_FUNCTION_ARGS)
 	}
 
 	/* Cleanup. */
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	PG_RETURN_BOOL(true);}
 
@@ -1547,7 +1561,7 @@ pglogical_replication_set_add_all_relations(Name repset_name,
 	existing_relations = list_concat_unique_oid(existing_relations,
 												replication_set_get_seqs(repset->id));
 
-	rel = heap_open(RelationRelationId, RowExclusiveLock);
+	rel = table_open(RelationRelationId, RowExclusiveLock);
 
 	foreach (lc, textarray_to_list(nsp_names))
 	{
@@ -1627,7 +1641,7 @@ pglogical_replication_set_add_all_relations(Name repset_name,
 		systable_endscan(sysscan);
 	}
 
-	heap_close(rel, RowExclusiveLock);
+	table_close(rel, RowExclusiveLock);
 
 	PG_RETURN_BOOL(true);
 }
@@ -1920,7 +1934,7 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");
 	rettupdesc = BlessTupleDesc(rettupdesc);
 
-	rel = heap_open(reloid, AccessShareLock);
+	rel = table_open(reloid, AccessShareLock);
 	reldesc = RelationGetDescr(rel);
 	replication_sets = textarray_to_list(rep_set_names);
 	replication_sets = get_replication_sets(node->node->id,
@@ -1962,9 +1976,19 @@ pglogical_show_repset_table_info(PG_FUNCTION_ARGS)
 
 	htup = heap_form_tuple(rettupdesc, values, nulls);
 
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
+}
+
+
+/*
+ * Dummy function to allow upgrading through all intermediate versions
+ */
+Datum
+pglogical_show_repset_table_info_by_target(PG_FUNCTION_ARGS)
+{
+	abort();
 }
 
 
@@ -1976,7 +2000,7 @@ filter_tuple(HeapTuple htup, ExprContext *econtext, List *row_filter_list)
 {
 	ListCell	   *lc;
 
-	ExecStoreTuple(htup, econtext->ecxt_scantuple, InvalidBuffer, false);
+	ExecStoreHeapTuple(htup, econtext->ecxt_scantuple, false);
 
 	foreach (lc, row_filter_list)
 	{
@@ -2016,7 +2040,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	ListCell   *lc;
 	TupleDesc	tupdesc;
 	TupleDesc	reltupdesc;
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	HeapTuple	htup;
 	List	   *row_filter_list = NIL;
 	EState		   *estate;
@@ -2083,7 +2107,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Check output type and table row type are the same. */
-	rel = heap_open(reloid, AccessShareLock);
+	rel = table_open(reloid, AccessShareLock);
 	reltupdesc = RelationGetDescr(rel);
 	if (!equalTupleDescs(tupdesc, reltupdesc))
 		ereport(ERROR,
@@ -2114,7 +2138,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 
 
 	/* Scan the table. */
-	scandesc = heap_beginscan(rel, GetActiveSnapshot(), 0, NULL);
+	scandesc = table_beginscan(rel, GetActiveSnapshot(), 0, NULL);
 
 	while (HeapTupleIsValid(htup = heap_getnext(scandesc, ForwardScanDirection)))
 	{
@@ -2129,7 +2153,7 @@ pglogical_table_data_filtered(PG_FUNCTION_ARGS)
 	FreeExecutorState(estate);
 
 	heap_endscan(scandesc);
-	heap_close(rel, NoLock);
+	table_close(rel, NoLock);
 
 	PG_RETURN_NULL();
 }
@@ -2162,6 +2186,7 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 		PGLogicalSyncStatus	   *subsync;
 		List				   *tables;
 		bool					isdone = false;
+		int						rc;
 
 		/* We need to see the latest rows */
 		PushActiveSnapshot(GetLatestSnapshot());
@@ -2208,8 +2233,11 @@ pglogical_wait_for_sync_complete(char *subscription_name, char *relnamespace, ch
 		CHECK_FOR_INTERRUPTS();
 
 		/* some kind of backoff could be useful here */
-		(void) WaitLatch(&MyProc->procLatch,
-						 WL_LATCH_SET | WL_TIMEOUT, 200L);
+		rc = WaitLatch(&MyProc->procLatch,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH, 200L);
+
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 
 		ResetLatch(&MyProc->procLatch);
 	} while (1);

@@ -35,17 +35,6 @@ PG_FUNCTION_INFO_V1(pglogical_wait_slot_confirm_lsn);
  *
  * No timeout is offered, use a statement_timeout.
  */
-#ifdef WIN32
-
-Datum
-pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
-{
- 	elog(ERROR, "pglogical.wait_slot_confirm_lsn(slotname name, target pg_lsn) not supported for Windows");	
-	PG_RETURN_VOID();	
-}
-
-#else
-
 Datum
 pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 {
@@ -59,7 +48,12 @@ pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 		slot_name = PG_GETARG_NAME(0);
 
 	if (PG_ARGISNULL(1))
-		target_lsn = GetXLogWriteRecPtr();
+	{
+		if (XLogRecPtrIsInvalid(XactLastCommitEnd))
+			target_lsn = GetXLogInsertRecPtr();
+		else
+			target_lsn = XactLastCommitEnd;
+	}
 	else
 		target_lsn = PG_GETARG_LSN(1);
 
@@ -119,4 +113,3 @@ pglogical_wait_slot_confirm_lsn(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
-#endif
